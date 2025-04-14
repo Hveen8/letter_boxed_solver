@@ -13,6 +13,7 @@
 #define MAX_SOLUTION_WORDS 100
 #define INITIAL_STACK_CAPACITY 10
 #define INITIAL_SOLUTIONS_CAPACITY 100
+#define MAX_SOLUTIONS_TO_STORE 20
 
 // Structure for a letter pair (for illegal transitions)
 typedef struct {
@@ -34,10 +35,28 @@ typedef struct {
     int edge_capacity;
 } Node;
 
+// Stack frame structure for DFS.
+typedef struct {
+    int depth;              // Number of words chosen so far.
+    int candidate_index;    // Next candidate index to try in candidate_list.
+    int candidate_count;    // Total candidates in candidate_list.
+    char** candidate_list;  // Candidate list for this level (for depth 0: valid_words; for depth > 0: words_by_first_letter for current letter).
+    bool used_letters[MAX_LETTERS]; // Letters used up to this state.
+    char current_letter;    // The letter that determined the candidate list (if depth > 0).
+    char* word;             // The word chosen at this frame (NULL for initial frame).
+} Frame;
+
+// Structure to store a solution
+typedef struct {
+    char** words;
+    int word_count;
+    int letter_count;  // Total number of letters across all words
+} Solution;
+
 // Helper function to convert string to lowercase
 void to_lowercase(char* str) {
     for (int i = 0; str[i]; i++) {
-        str[i] = tolower(str[i]);
+        str[i] = (char)tolower(str[i]);
     }
 }
 
@@ -74,13 +93,12 @@ bool is_illegal_pair(char first, char second, LetterPair* illegal_pairs, int ill
 }
 
 // Filter words that contain valid letter transitions
-char** filter_valid_words(char* word_list[], int word_count, 
-                          char groups[][MAX_GROUP_SIZE], int group_sizes[], int num_groups,
+char** filter_valid_words(char* word_list[], int word_count,
                           char all_letters[], int all_letter_count,
                           LetterPair* illegal_pairs, int illegal_pair_count,
                           int* valid_word_count) {
     
-    char** valid_words = (char**)malloc(word_count * sizeof(char*));
+    char** valid_words = (char**)malloc((size_t)word_count * sizeof(char*));
     *valid_word_count = 0;
     
     for (int w = 0; w < word_count; w++) {
@@ -161,7 +179,7 @@ void build_graph_from_words(char* valid_words[], int valid_word_count,
     // Build transitions in the graph
     for (int w = 0; w < valid_word_count; w++) {
         char* word = valid_words[w];
-        int len = strlen(word);
+        size_t len = strlen(word);
         
         if (len > 0) {
             char last_letter = word[len - 1];
@@ -220,19 +238,9 @@ double word_score(char* word, int letter_frequency[]) {
     return score;
 }
 
-// Compare function for qsort used to sort words by score
-int compare_words_by_score(const void* a, const void* b) {
-    char* word1 = *(char**)a;
-    char* word2 = *(char**)b;
-    
-    // This will be replaced with actual scoring logic when used
-    return 0;
-}
-
 // Find a solution using greedy approach
 char** find_path_greedy(char* valid_words[], int valid_word_count,
                         char all_letters[], int all_letter_count,
-                        char groups[][MAX_GROUP_SIZE], int group_sizes[], int num_groups,
                         char** words_by_first_letter[], int* solution_size) {
     
     // Calculate letter frequencies
@@ -382,7 +390,6 @@ char** find_path_greedy(char* valid_words[], int valid_word_count,
                 // Check each candidate word
                 for (int w = 0; w < candidates_count; w++) {
                     char* word = candidates[w];
-                    bool valid = true;
                     
                     // Count new letters this word would add
                     int new_letters = 0;
@@ -450,26 +457,6 @@ bool covers_all_letters(bool used_letters[MAX_LETTERS], char all_letters[], int 
     return true;
 }
 
-// Stack frame structure for DFS.
-typedef struct {
-    int depth;              // Number of words chosen so far.
-    int candidate_index;    // Next candidate index to try in candidate_list.
-    int candidate_count;    // Total candidates in candidate_list.
-    char** candidate_list;  // Candidate list for this level (for depth 0: valid_words; for depth > 0: words_by_first_letter for current letter).
-    bool used_letters[MAX_LETTERS]; // Letters used up to this state.
-    char current_letter;    // The letter that determined the candidate list (if depth > 0).
-    char* word;             // The word chosen at this frame (NULL for initial frame).
-} Frame;
-
-// Helper: Print current solution from stack frames (ignoring the initial frame).
-void print_solution(Frame stack[], int top) {
-    printf("Found solution (%d words): ", top - 1);
-    for (int i = 1; i < top; i++) {
-        printf("%s ", stack[i].word);
-    }
-    printf("\n");
-}
-
 bool is_word_used(char* candidate, char* current_solution[], int solution_count) {
     for (int i = 0; i < solution_count; i++) {
         if (strcmp(current_solution[i], candidate) == 0)
@@ -478,10 +465,46 @@ bool is_word_used(char* candidate, char* current_solution[], int solution_count)
     return false;
 }
 
+// Helper function to insert a solution into a sorted array
+void insert_sorted_solution(Solution min_solutions[], int* min_solutions_count, Solution new_solution, int max_solutions) {
+    // Find the position to insert based on letter count
+    int pos = 0;
+    while (pos < *min_solutions_count && min_solutions[pos].letter_count <= new_solution.letter_count) {
+        pos++;
+    }
+    
+    // If array is full and the new solution should be at the end, discard it
+    if (*min_solutions_count == max_solutions && pos == max_solutions) {
+        // Free the new solution since we won't use it
+        for (int j = 0; j < new_solution.word_count; j++) {
+            free(new_solution.words[j]);
+        }
+        free(new_solution.words);
+        return;
+    }
+    
+    // If array is full, free the last solution to make room
+    if (*min_solutions_count == max_solutions) {
+        for (int j = 0; j < min_solutions[max_solutions-1].word_count; j++) {
+            free(min_solutions[max_solutions-1].words[j]);
+        }
+        free(min_solutions[max_solutions-1].words);
+        (*min_solutions_count)--;
+    }
+    
+    // Shift elements to make room for the new solution
+    for (int i = *min_solutions_count; i > pos; i--) {
+        min_solutions[i] = min_solutions[i-1];
+    }
+    
+    // Insert the new solution
+    min_solutions[pos] = new_solution;
+    (*min_solutions_count)++;
+}
+
 // Iterative exhaustive search using an explicit DFS stack.
 void find_paths_exhaustive(char* valid_words[], int valid_word_count,
                                      char all_letters[], int all_letter_count,
-                                     char groups[][MAX_GROUP_SIZE], int group_sizes[], int num_groups,
                                      char** words_by_first_letter[]) {
     int best_solution_count = 5;  // No solution found yet; use a very high initial value.
     unsigned long long iteration_count = 0;
@@ -499,6 +522,10 @@ void find_paths_exhaustive(char* valid_words[], int valid_word_count,
     // used_letters remains all false; word remains NULL.
     stack_top++;
     
+    // Storage for all minimum solutions - limit to 100 solutions
+    Solution min_solutions[MAX_SOLUTIONS_TO_STORE];
+    int min_solutions_count = 0;
+    
     // Iterative DFS.
     while (stack_top > 0) {
         iteration_count++;
@@ -509,7 +536,7 @@ void find_paths_exhaustive(char* valid_words[], int valid_word_count,
         
         Frame *current = &stack[stack_top - 1];
         // Prune this branch if adding another word would equal/exceed the current best solution.
-        if (current->depth >= best_solution_count - 1) {
+        if (current->depth >= best_solution_count) {
             stack_top--;  // Backtrack.
             continue;
         }
@@ -520,7 +547,14 @@ void find_paths_exhaustive(char* valid_words[], int valid_word_count,
             current->candidate_index++;
 
             // Check if the candidate word is already used in the current solution.
-            if (is_word_used(candidate, stack[0].candidate_list, current->depth)) {
+            bool already_used = false;
+            for (int i = 1; i < stack_top; i++) {
+                if (strcmp(stack[i].word, candidate) == 0) {
+                    already_used = true;
+                    break;
+                }
+            }
+            if (already_used) {
                 continue;
             }
             
@@ -563,9 +597,35 @@ void find_paths_exhaustive(char* valid_words[], int valid_word_count,
             // Check if the current chain covers all required letters.
             if (covers_all_letters(new_frame.used_letters, all_letters, all_letter_count)) {
                 if (new_frame.depth < best_solution_count) {
+                    // Found a better solution, clear previous solutions
+                    for (int i = 0; i < min_solutions_count; i++) {
+                        for (int j = 0; j < min_solutions[i].word_count; j++) {
+                            free(min_solutions[i].words[j]);
+                        }
+                        free(min_solutions[i].words);
+                    }
+                    min_solutions_count = 0;
                     best_solution_count = new_frame.depth;
-                    print_solution(stack, stack_top);
+                    printf("Found new best solution with %d words\n", best_solution_count);
                 }
+                
+                if (new_frame.depth == best_solution_count) {
+                    // Create a new solution entry
+                    Solution new_solution;
+                    new_solution.word_count = stack_top - 1;  // Exclude initial frame
+                    new_solution.words = (char**)malloc(new_solution.word_count * sizeof(char*));
+                    new_solution.letter_count = 0;
+                    
+                    // Copy words from stack frames to solution and count total letters
+                    for (int i = 1; i < stack_top; i++) {
+                        new_solution.words[i-1] = strdup(stack[i].word);
+                        new_solution.letter_count += strlen(stack[i].word);
+                    }
+                    
+                    // Insert the solution in the sorted array
+                    insert_sorted_solution(min_solutions, &min_solutions_count, new_solution, MAX_SOLUTIONS_TO_STORE);
+                }
+                
                 // Backtrack from this branch after finding a solution.
                 stack_top--;
             }
@@ -576,18 +636,38 @@ void find_paths_exhaustive(char* valid_words[], int valid_word_count,
     }
     
     // Final progress update.
-    printf("Search complete. Total candidate solutions searched: %llu\n", iteration_count);
+    printf("\nSearch complete. Total candidate solutions searched: %llu\n", iteration_count);
+    
+    // Print all minimum solutions (already sorted by letter count)
+    printf("\nFound %d optimal solutions with %d words (sorted by total length):\n", 
+           min_solutions_count, best_solution_count);
+    for (int i = 0; i < min_solutions_count; i++) {
+        printf("Solution %d (%d letters): ", i + 1, min_solutions[i].letter_count);
+        for (int j = 0; j < min_solutions[i].word_count; j++) {
+            printf("%s ", min_solutions[i].words[j]);
+        }
+        printf("\n");
+    }
+    
+    // Free solution memory
+    for (int i = 0; i < min_solutions_count; i++) {
+        for (int j = 0; j < min_solutions[i].word_count; j++) {
+            free(min_solutions[i].words[j]);
+        }
+        free(min_solutions[i].words);
+    }
 }
 
 // Function to safely ask the user for 12 letters in four groups of three
 void get_user_input_groups(char groups[MAX_GROUPS][MAX_GROUP_SIZE], int group_sizes[], int num_groups) {
     printf("Please enter 12 letters in four groups of three. Use [ * * * ] [ * * * ] ... format.\n");
     printf("Type 'del' to delete the previous letter in case of a mistake.\n");
-
+    printf("You can also enter 3 letters at once to fill an entire group.\n");
+    
     int total_letters = 0;
     char input[10]; // Buffer for user input
     memset(groups, 0, sizeof(char) * MAX_GROUPS * MAX_GROUP_SIZE);
-
+    
     while (total_letters < 12) {
         // Move cursor to the top line and clear it
         printf("\033[F\033[K"); // Move cursor up one line and clear the line
@@ -605,14 +685,14 @@ void get_user_input_groups(char groups[MAX_GROUPS][MAX_GROUP_SIZE], int group_si
             }
         }
         printf("]\n");
-
+        
         // Prompt user for input on the second line
-        printf("Enter a letter or 'del': ");
+        printf("Enter a letter, 3 letters to fill a group, or 'del': ");
         fflush(stdout);
-
+        
         // Get user input
         scanf("%s", input);
-
+        
         if (strcmp(input, "del") == 0) {
             // Delete the last entered letter
             if (total_letters > 0) {
@@ -622,18 +702,35 @@ void get_user_input_groups(char groups[MAX_GROUPS][MAX_GROUP_SIZE], int group_si
                 groups[group][index] = '\0';
             }
         } else if (strlen(input) == 1 && isalpha(input[0])) {
-            // Add the letter to the next available slot
+            // Add the single letter to the next available slot
             char letter = tolower(input[0]);
             int group = total_letters / 3;
             int index = total_letters % 3;
             groups[group][index] = letter;
             total_letters++;
+        } else if (strlen(input) == 3 && isalpha(input[0]) && isalpha(input[1]) && isalpha(input[2])) {
+            // Handle 3-letter input to fill an entire group
+            int group = total_letters / 3;
+            int index = total_letters % 3;
+            
+            // Only add the 3 letters if we're at the beginning of a group
+            if (index == 0) {
+                groups[group][0] = tolower(input[0]);
+                groups[group][1] = tolower(input[1]);
+                groups[group][2] = tolower(input[2]);
+                total_letters += 3;
+            } else {
+                printf("\033[F\033[KCan't add 3 letters to a partially filled group.\n");
+                sleep(1); // Give user time to read the message
+            }
         } else {
-            printf("\033[F\033[KInvalid input. Please enter a single letter or 'del'.\n");
+            printf("\033[F\033[KInvalid input. Please enter a single letter, 3 letters, or 'del'.\n");
+            sleep(1); // Give user time to read the message
         }
+        
         printf("\033[F\033[K"); // Move cursor up one line and clear the line
     }
-
+    
     // Final display of input
     printf("\033[F\033[K[ ");
     for (int g = 0; g < num_groups; g++) {
@@ -708,12 +805,12 @@ char** get_common_english_words(int* word_count) {
 
 int main() {
     // Example with 4 groups of 3 letters each
-    char example_groups[MAX_GROUPS][MAX_GROUP_SIZE] = {
-        {'l', 'u', 'v'},
-        {'q', 'r', 'w'},
-        {'m', 'e', 'o'},
-        {'s', 'y', 'i'}
-    };
+    // char example_groups[MAX_GROUPS][MAX_GROUP_SIZE] = {
+    //     {'l', 'u', 'v'},
+    //     {'q', 'r', 'w'},
+    //     {'m', 'e', 'o'},
+    //     {'s', 'y', 'i'}
+    // };
     
     char letter_groups[MAX_GROUPS][MAX_GROUP_SIZE] = {0};
     int group_sizes[MAX_GROUPS] = {3, 3, 3, 3};
@@ -750,8 +847,8 @@ int main() {
         int word_count;
         char** words;
         
-        if (access("2of12.txt", F_OK) != -1) {
-            words = load_word_list("2of12.txt", &word_count);
+        if (access("2of12inf_sorted.txt", F_OK) != -1) {
+            words = load_word_list("2of12inf_sorted.txt", &word_count);
             printf("Loaded %d words from file\n", word_count);
         } else {
             printf("Using built-in word list (limited)\n");
@@ -762,7 +859,6 @@ int main() {
         // Filter valid words
         int valid_word_count;
         char** valid_words = filter_valid_words(words, word_count, 
-                                              letter_groups, group_sizes, num_groups,
                                               all_letters, all_letter_count,
                                               illegal_pairs, illegal_pair_count,
                                               &valid_word_count);
@@ -780,9 +876,7 @@ int main() {
         // Find solution
 
         find_paths_exhaustive(valid_words, valid_word_count,
-            all_letters, all_letter_count,
-            letter_groups, group_sizes, num_groups,
-            words_by_first_letter);
+            all_letters, all_letter_count, words_by_first_letter);
         
         // Free memory
         for (int i = 0; i < all_letter_count; i++) {
